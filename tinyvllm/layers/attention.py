@@ -62,6 +62,7 @@ class Attention(nn.Module):
         self.k_cache = self.v_cache = torch.tensor([]) # 在model_runner的init阶段就已经为每个Attention实例分配好了k_cache和v_cache，地址和shape是固定不变的。每个module的k/v_cache的shape为(num_kvcache_blocks, block_size, num_kv_heads, head_dim)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+        # print(f"q.shape={q.shape}, k.shape={k.shape}, v.shape={v.shape}")
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel(): # .numel()会返回张量中元素的数量，如果为0则表示还没有初始化(比如warmup阶段)，只有被初始化后才要存储KV Cache

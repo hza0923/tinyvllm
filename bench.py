@@ -1,4 +1,5 @@
 import os
+from rich import print
 import time
 from random import randint, seed
 from tinyvllm import LLM, SamplingParams
@@ -11,7 +12,7 @@ def main():
     max_input_len = 1024
     max_ouput_len = 1024
 
-    path = os.path.expanduser("/home/ecnu/disk/hza/tiny-vllm/qwen3-0.6B")
+    path = os.path.expanduser("/home/ecnu/disk/hza/tiny-vllm/models/qwen3-0.6B")
     llm = LLM(path, enforce_eager=False, max_model_len=4096)
 
     prompt_token_ids = [[randint(0, 10000) for _ in range(randint(100, max_input_len))] for _ in range(num_seqs)] # shape: (num_seqs, seq_len)

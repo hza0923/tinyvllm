@@ -7,10 +7,11 @@ from multiprocessing.shared_memory import SharedMemory
 from tinyvllm.config import Config
 from tinyvllm.engine.sequence import Sequence
 from tinyvllm.models.qwen3 import Qwen3ForCausalLM
+from tinyvllm.models.llama import LlamaForCausalLM
 from tinyvllm.layers.sampler import Sampler
 from tinyvllm.utils.context import set_context, get_context, reset_context
 from tinyvllm.utils.loader import load_model
-
+# print(f"loader in {tinyvllm.utils.loader.__file__}")
 
 class ModelRunner:
 
@@ -30,7 +31,11 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype() # Torch 默认浮点 dtype 是 torch.float32
         torch.set_default_dtype(hf_config.torch_dtype) # 将默认浮点 dtype 设置为 hf_config.torch_dtype，这样在后续的代码中创建的浮点张量默认会使用这个 dtype，而不是 torch.float32。
         torch.set_default_device("cuda") # 将默认设备设置为"cuda"(即cuda:rank)，这样在后续的代码中创建的张量默认会分配到GPU上，而不是CPU上。
-        self.model = Qwen3ForCausalLM(hf_config) 
+        model_type = hf_config.model_type # 模型类型，例如"qwen3"，用于根据模型类型选择相应的模型类进行初始化。
+        if model_type == "qwen3":
+            self.model = Qwen3ForCausalLM(hf_config) 
+        elif model_type == "llama":
+            self.model = LlamaForCausalLM(hf_config)
         load_model(self.model, config.model) # 在cuda上加载模型权重
         self.sampler = Sampler() # 采样器对象，用于根据模型输出的logits和温度参数生成下一个token的ID列表。
         self.warmup_model() # 在cuda上预热

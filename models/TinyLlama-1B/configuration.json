@@ -1,0 +1,8 @@
+{
+    "framework":"pytorch",
+    "task":"chat",
+    "model":{
+        "type": "LlamaForCausalLM"
+    },
+    "allow_remote": true
+}

@@ -20,6 +20,7 @@ def load_model(model: nn.Module, path: str):
     #     "gate_proj": ("gate_up_proj", 0),
     #     "up_proj": ("gate_up_proj", 1),
     # }
+    print(f"Loading model from {path}...")
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {}) # 从模型中获取名为"packed_modules_mapping"的属性，如果该属性不存在，则返回一个空字典。
     for file in glob(os.path.join(path, "*.safetensors")): # glob(os.path.join(path, "*.safetensors"))会将path和"*.safetensors"拼接成一个完整的路径模式，然后glob函数会根据这个模式查找匹配的文件路径，并返回一个包含这些文件路径的列表。
         with safe_open(file, "pt", "cpu") as f: # 
