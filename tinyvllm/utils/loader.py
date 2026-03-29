@@ -20,17 +20,17 @@ def load_model(model: nn.Module, path: str):
     #     "gate_proj": ("gate_up_proj", 0),
     #     "up_proj": ("gate_up_proj", 1),
     # }
-    print(f"Loading model from {path}...")
+    # print(f"Loading model from {path}...")
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {}) # 从模型中获取名为"packed_modules_mapping"的属性，如果该属性不存在，则返回一个空字典。
     for file in glob(os.path.join(path, "*.safetensors")): # glob(os.path.join(path, "*.safetensors"))会将path和"*.safetensors"拼接成一个完整的路径模式，然后glob函数会根据这个模式查找匹配的文件路径，并返回一个包含这些文件路径的列表。
         with safe_open(file, "pt", "cpu") as f: # 
             for weight_name in f.keys(): # f.keys()会返回safetensors文件中所有权重的名称列表。这个循环会遍历这些权重名称，逐个处理每个权重。
-                print(f"Loading weight: {weight_name}") 
+                # print(f"Loading weight: {weight_name}") 
                 for k in packed_modules_mapping: # 遍历packed_modules_mapping中的每个键k，检查k是否是当前权重名称weight_name的子字符串。如果是，则说明这个权重需要进行特殊处理。
                     if k in weight_name:
                         v, shard_id = packed_modules_mapping[k] # 从packed_modules_mapping中获取与k对应的值v和shard_id。v是该权重分片的新名字，shard_id是一个整数，用来指定当前权重所在的分片编号。
                         param_name = weight_name.replace(k, v) # 将权重名称weight_name中的k替换为v，得到新的参数名称param_name。这个新的参数名称是模型中对应的参数名称。
-                        print(f"  Found in packed_modules_mapping, loading to {param_name}, shard_id: {shard_id}")
+                        # print(f"  Found in packed_modules_mapping, loading to {param_name}, shard_id: {shard_id}")
                         # get_parameter方法会根据参数名称param_name从模型中获取对应的参数对象param。是模型中定义的一个nn.Parameter实例，代表了需要加载权重的参数。
                         # 以model.layers.0.self_attn.qkv_proj.weight为例：
                         #   先找model变量(Qwen3ForCausalLM)的self.model(Qwen3Model)
@@ -51,3 +51,4 @@ def load_model(model: nn.Module, path: str):
                     param = model.get_parameter(weight_name)
                     weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, f.get_tensor(weight_name))
+        
