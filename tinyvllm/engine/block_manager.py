@@ -40,14 +40,28 @@ class BlockManager:
         h.update(np.array(token_ids).tobytes())
         return h.intdigest()
 
-    # 将块 id 从空闲列表中分配出来，并将其添加到已使用集合中。重置块的状态，并返回块对象。
-    def _allocate_block(self, block_id: int) -> Block:
+    def _allocate_first_free(self) -> Block:
+        block_id = self.free_block_ids.popleft()
         block = self.blocks[block_id]
         assert block.ref_count == 0
         block.reset()
-        self.free_block_ids.remove(block_id)
         self.used_block_ids.add(block_id)
-        return self.blocks[block_id]
+        return block
+
+    def _allocate_specific_free(self, block_id: int) -> Block:
+        # slow path: allocate a specific free block id (not necessarily deque head)
+        block = self.blocks[block_id]
+        assert block.ref_count == 0
+        block.reset()
+        self.free_block_ids.remove(block_id)  # O(n), should be rare
+        self.used_block_ids.add(block_id)
+        return block
+    
+    # 将块 id 从空闲列表中分配出来，并将其添加到已使用集合中。重置块的状态，并返回块对象。
+    def _allocate_block(self, block_id: int) -> Block:
+        if self.free_block_ids and self.free_block_ids[0] == block_id:
+            return self._allocate_first_free()
+        return self._allocate_specific_free(block_id)
 
     # 将块 id 从已使用集合中移除，并添加回空闲列表中。断言块的引用计数为 0，确保块没有被任何序列引用。
     def _deallocate_block(self, block_id: int) -> Block:
@@ -78,8 +92,10 @@ class BlockManager:
 
             # 根据缓存命中情况分配块，如果缓存未命中则申请新块，否则复用缓存块并增加引用计数。
             if cache_miss: # 如果没有前缀匹配了，就申请新块，不再尝试匹配后续块了。
-                block_id = self.free_block_ids[0]
-                block = self._allocate_block(block_id)
+                # block_id = self.free_block_ids[0]
+                # block = self._allocate_block(block_id)
+                block = self._allocate_first_free() # 从空闲块中分配一个块，返回块对象。这个方法会自动更新空闲块列表和已使用块集合。
+                block_id = block.block_id
             else:
                 seq.num_cached_tokens += self.block_size # 如果有前缀可用，则增加 num_cached_tokens 的计数，表示这些 token 可以直接使用缓存块，无需重新计算 KV。
                 if block_id in self.used_block_ids:
@@ -108,7 +124,8 @@ class BlockManager:
 
     # 检查是否有足够的空闲块来追加给序列。根据序列当前的 token 数量和块大小，判断是否需要分配新块来存储新增的 token。
     def can_append(self, seq: Sequence) -> bool:
-        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1) # 只有当序列当前的 token 数量对块大小取模等于 1 时，才需要分配新块来存储新增的 token，因为这时新增的 token 将会填满当前块并需要一个新的块来存储后续的 token。
+        need_new_block = (len(seq) % self.block_size == 1)
+        return (not need_new_block) or (len(self.free_block_ids) >= 1) # 只有当序列需要分配新块来存储新增的 token时，才需要检查是否有足够的空闲块，否则不需要检查。
 
     def may_append(self, seq: Sequence):
         block_table = seq.block_table

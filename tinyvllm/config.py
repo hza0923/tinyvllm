@@ -23,6 +23,6 @@ class Config:
         assert os.path.isdir(self.model) # 检查model参数是否是一个有效的目录路径，因为模型文件通常保存在一个目录中。
         assert self.kvcache_block_size % 256 == 0 # 检查kvcache_block_size参数是否是256的倍数，因为256个kvcache放在一个页中。
         assert 1 <= self.tensor_parallel_size <= 8 # 目前支持的张量并行度范围是1到8。
-        self.hf_config = AutoConfig.from_pretrained(self.model) # 读取模型目录下的配置文件，获取模型的相关信息，比如词表大小、最大位置编码长度等。
-        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings) # 最大长度受限于模型本身的最大位置编码长度，不能超过这个值。
+        if self.hf_config is not None:
+            self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
         assert self.max_num_batched_tokens >= self.max_model_len # 批处理的最大token数量必须大于等于模型的最大长度，否则无法进行有效的批处理。

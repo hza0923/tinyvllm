@@ -6,9 +6,9 @@ from transformers import AutoTokenizer
 
 def main():
     # os.path.expanduser是将路径中的~替换为用户的home目录
-    # path = os.path.expanduser("~/disk/hza/tiny-vllm/models/qwen3-0.6B") 
-    path = os.path.expanduser("/home/ecnu/disk/hza/tiny-vllm/models/Llama-3-1B") 
-    # path = os.path.expanduser("/home/ecnu/disk/hza/tiny-vllm/models/TinyLlama-1B") 
+    # path = os.path.expanduser("~/disk/hza/tiny-vllm/models_weights/qwen3-0.6B") 
+    path = os.path.expanduser("/home/ecnu/disk/hza/tiny-vllm/models_weights/Llama-3-1B") 
+    # path = os.path.expanduser("/home/ecnu/disk/hza/tiny-vllm/models_weights/TinyLlama-1B") 
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
 

@@ -3,7 +3,7 @@ import torch
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
-
+import os
 from tinyvllm.config import Config
 from tinyvllm.engine.sequence import Sequence
 from tinyvllm.models.qwen3 import Qwen3ForCausalLM
@@ -11,6 +11,7 @@ from tinyvllm.models.llama import LlamaForCausalLM
 from tinyvllm.layers.sampler import Sampler
 from tinyvllm.utils.context import set_context, get_context, reset_context
 from tinyvllm.utils.loader import load_model
+from tinyvllm.utils.model_registry import get_model_class
 # print(f"loader in {tinyvllm.utils.loader.__file__}")
 
 class ModelRunner:
@@ -19,6 +20,7 @@ class ModelRunner:
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
         self.config = config # 传入的配置对象，包含了模型运行所需的各种参数和设置，例如模型路径、GPU内存利用率、最大批次大小等。这些参数会在ModelRunner的初始化和运行过程中使用。
         hf_config = config.hf_config # 模型配置对象，包含了模型的各种参数和设置，例如hidden_size、num_attention_heads、num_hidden_layers等。这些参数会在后续的模型初始化和运行过程中使用。
+        assert hf_config is not None, "config.hf_config must be set before creating ModelRunner"
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
@@ -26,16 +28,15 @@ class ModelRunner:
         self.event = event
 
         # 创建分布式进程组，使用NCCL后端进行通信，指定通信地址和端口，以及总的进程数和当前进程的rank。这个方法会初始化分布式环境，使得不同的模型进程可以通过通信进行协作。
-        dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
+        self._init_dist(rank)
+        
         torch.cuda.set_device(rank) # 设置当前进程使用的cuda设备索引(只改变"cuda"所代表的GPU，但不改变默认设备的选择)，rank=0则使用GPU 0，rank=1则使用GPU 1，以此类推。这确保了每个模型进程都在不同的GPU上运行，避免了资源冲突。
         default_dtype = torch.get_default_dtype() # Torch 默认浮点 dtype 是 torch.float32
         torch.set_default_dtype(hf_config.torch_dtype) # 将默认浮点 dtype 设置为 hf_config.torch_dtype，这样在后续的代码中创建的浮点张量默认会使用这个 dtype，而不是 torch.float32。
         torch.set_default_device("cuda") # 将默认设备设置为"cuda"(即cuda:rank)，这样在后续的代码中创建的张量默认会分配到GPU上，而不是CPU上。
         model_type = hf_config.model_type # 模型类型，例如"qwen3"，用于根据模型类型选择相应的模型类进行初始化。
-        if model_type == "qwen3":
-            self.model = Qwen3ForCausalLM(hf_config) 
-        elif model_type == "llama":
-            self.model = LlamaForCausalLM(hf_config)
+        model_cls = get_model_class(model_type) # 根据模型类型获取相应的模型类，例如Qwen3ForCausalLM或LlamaForCausalLM。
+        self.model = model_cls(hf_config) # 根据模型配置对象初始化模型实例
         load_model(self.model, config.model) # 在cuda上加载模型权重
         self.sampler = Sampler() # 采样器对象，用于根据模型输出的logits和温度参数生成下一个token的ID列表。
         self.warmup_model() # 在cuda上预热
@@ -53,6 +54,15 @@ class ModelRunner:
                 dist.barrier()
                 self.shm = SharedMemory(name="tinyvllm")
                 self.loop() # 其他进程不需要执行其他逻辑，所以在loop方法中等待rank 0通过共享内存发送调用请求，并执行相应的方法。当rank 0发送exit方法时，其他进程会退出循环并调用exit方法进行清理和关闭分布式环境。
+
+    def _init_dist(self, rank: int) -> None:
+        if dist.is_initialized():
+            return
+        world_size = self.world_size
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("MASTER_PORT", "2333")
+        init_method = f"tcp://{master_addr}:{master_port}"
+        dist.init_process_group("nccl", init_method=init_method, world_size=world_size, rank=rank)
 
     def exit(self):
         if self.world_size > 1:
@@ -213,10 +223,14 @@ class ModelRunner:
             graph_vars = self.graph_vars
             graph_vars["input_ids"][:bs] = input_ids # 将张量的数据复制到graph_vars字典中对应的张量的前bs行。
             graph_vars["positions"][:bs] = positions
+
             graph_vars["slot_mapping"].fill_(-1)
             graph_vars["slot_mapping"][:bs] = context.slot_mapping
+
             graph_vars["context_lens"].zero_() # .zero_()方法会将张量中的所有元素设置为0，这样可以确保在每次模型计算之前，context_lens张量中的值都是0，避免了之前计算的结果对当前计算的影响。
             graph_vars["context_lens"][:bs] = context.context_lens
+
+            graph_vars["block_tables"][:bs].fill_(-1)
             graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
             graph.replay() # 如果是decode阶段，可以利用之前捕捉的cuda图进行重放，加速运行。
             return self.model.compute_logits(graph_vars["outputs"][:bs])
