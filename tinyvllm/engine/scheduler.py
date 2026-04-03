@@ -43,6 +43,7 @@ class Scheduler:
         # prefill与decode穿插调度，避免decode因prefill而长时间stall
         force_decode = bool(self.running) and self._prefill_streak >= self.prefill_max_consecutive
 
+        # test
         if not force_decode:
             # prefill
             scheduled_seqs = []
