@@ -14,7 +14,9 @@ class Scheduler:
         self.block_manager = block_manager
         self.waiting: deque[Sequence] = deque() # deque是一种双端队列数据结构，支持在两端进行高效的插入和删除操作。在左加用appendleft()方法，在右加用append()方法，在左删用popleft()方法，在右删用pop()方法。可prefill的seqs
         self.running: deque[Sequence] = deque() # 可decode的seqs，正在生成的seqs
-
+        
+        self.prefill_max_consecutive = 2
+        self._prefill_streak = 0
         
     
     def _require_block_manager(self) -> BlockManager:
@@ -38,24 +40,28 @@ class Scheduler:
     def schedule(self) -> tuple[list[Sequence], bool]:
         block_manager = self._require_block_manager()
 
+        # prefill与decode穿插调度，避免decode因prefill而长时间stall
+        force_decode = bool(self.running) and self._prefill_streak >= self.prefill_max_consecutive
 
-        # prefill
-        scheduled_seqs = []
-        num_seqs = 0
-        num_batched_tokens = 0
-        while self.waiting and num_seqs < self.max_num_seqs: # bs必须小于max_num_seqs
-            seq = self.waiting[0] # 从队头获取一个序列，但不从队列中删除它。这个操作不会改变等待队列的状态，只是查看队头的序列，以决定是否可以将其安排执行。
-            if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not block_manager.can_allocate(seq): # 如果当前已经安排执行的序列数量加上这个序列的长度超过了最大批处理令牌数，或者块管理器无法为这个序列分配资源，那么就停止安排更多的序列执行。
-                break
-            num_seqs += 1
-            block_manager.allocate(seq) # 块管理器为这个序列分配资源，准备将其安排执行。
-            num_batched_tokens += len(seq) - seq.num_cached_tokens # num_cached_tokens是这个序列中已经被缓存的token数量，len(seq) - num_cached_tokens就是这个序列中需要新处理的token数量。将这个数量加到num_batched_tokens中，以更新当前已经安排执行的序列的总令牌数。
-            seq.status = SequenceStatus.RUNNING # 将这个序列的状态设置为RUNNING，表示它已经被安排执行了。
-            self.waiting.popleft() # 从等待队列中删除这个序列，因为它已经被安排执行了，不再需要在等待队列中。
-            self.running.append(seq) # 将这个序列添加到正在运行的队列中，表示这个序列已经被启动执行了，只有当这个序列完成全部的生成任务后，才会从正在运行的队列中删除。
-            scheduled_seqs.append(seq) # 将这个序列添加到scheduled_seqs列表中，以便后续返回给调用者。scheduled_seqs列表用于存储本次调度安排执行的序列，以便调用者可以知道哪些序列被安排执行了。
-        if scheduled_seqs: # 不存在pd混合的情况，说明当前安排执行的序列都是prefill阶段的序列，直接返回scheduled_seqs和True即可。
-            return scheduled_seqs, True
+        if not force_decode:
+            # prefill
+            scheduled_seqs = []
+            num_seqs = 0
+            num_batched_tokens = 0
+            while self.waiting and num_seqs < self.max_num_seqs: # bs必须小于max_num_seqs
+                seq = self.waiting[0] # 从队头获取一个序列，但不从队列中删除它。这个操作不会改变等待队列的状态，只是查看队头的序列，以决定是否可以将其安排执行。
+                if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not block_manager.can_allocate(seq): # 如果当前已经安排执行的序列数量加上这个序列的长度超过了最大批处理令牌数，或者块管理器无法为这个序列分配资源，那么就停止安排更多的序列执行。
+                    break
+                num_seqs += 1
+                block_manager.allocate(seq) # 块管理器为这个序列分配资源，准备将其安排执行。
+                num_batched_tokens += len(seq) - seq.num_cached_tokens # num_cached_tokens是这个序列中已经被缓存的token数量，len(seq) - num_cached_tokens就是这个序列中需要新处理的token数量。将这个数量加到num_batched_tokens中，以更新当前已经安排执行的序列的总令牌数。
+                seq.status = SequenceStatus.RUNNING # 将这个序列的状态设置为RUNNING，表示它已经被安排执行了。
+                self.waiting.popleft() # 从等待队列中删除这个序列，因为它已经被安排执行了，不再需要在等待队列中。
+                self.running.append(seq) # 将这个序列添加到正在运行的队列中，表示这个序列已经被启动执行了，只有当这个序列完成全部的生成任务后，才会从正在运行的队列中删除。
+                scheduled_seqs.append(seq) # 将这个序列添加到scheduled_seqs列表中，以便后续返回给调用者。scheduled_seqs列表用于存储本次调度安排执行的序列，以便调用者可以知道哪些序列被安排执行了。
+            if scheduled_seqs: # 不存在pd混合的情况，说明当前安排执行的序列都是prefill阶段的序列，直接返回scheduled_seqs和True即可。
+                self._prefill_streak += 1
+                return scheduled_seqs, True
 
         # decode
         while self.running and num_seqs < self.max_num_seqs: # 只有self.running不为空(有decode阶段但是还没生成结束的任务)，并且当前已经安排执行的序列数量还没有达到最大批处理序列数时，才会继续安排更多的序列执行。
@@ -73,6 +79,7 @@ class Scheduler:
         assert scheduled_seqs
         # self.running.extendleft(reversed(scheduled_seqs)) # 将本次安排执行的序列重新添加到正在运行的队列的左端，保持它们在正在运行队列中的顺序不变。由于之前是从running队列中弹出这些序列来安排执行的，所以现在需要将它们重新添加回running队列中，以便后续继续安排执行。
         self.running.extend(scheduled_seqs) # RR轮转：本轮执行过的 seq 放到队尾，避免队头长期霸占
+        self._prefill_streak = 0
         return scheduled_seqs, False
 
     def preempt(self, seq: Sequence): # preempt是抢占的意思，这里是把正在运行的seq抢占下来，放回等待队列中。这个方法会被调度器在调度过程中调用，当它需要腾出资源来安排新的序列时，就会调用preempt方法来抢占正在运行的序列。被抢占的序列会被设置为WAITING状态，并且被放回等待队列中，以便后续再次被调度器安排执行。

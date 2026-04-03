@@ -25,6 +25,7 @@ MANIFEST
 *.spec
 # workspace
 *.code-workspace
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
