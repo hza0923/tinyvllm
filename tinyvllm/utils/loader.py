@@ -41,7 +41,7 @@ def load_model(model: nn.Module, path: str):
                         #   最后找qkv_proj的weight属性（一个nn.Parameter）。这个weight参数就是我们需要加载权重的目标参数。
                         param = model.get_parameter(param_name) 
                         weight_loader = getattr(param, "weight_loader") # 从参数对象param中获取名为"weight_loader"的属性，如果该属性不存在，则会引发AttributeError异常。这个weight_loader是一个方法，用于加载权重到参数中。
-                        
+                        print(f"  Found in packed_modules_mapping, loading to {param_name}, shard_id: {shard_id}, weight_loader: {weight_loader.__qualname__}")
                         # 加载权重的本质：把从 .safetensors 文件中读取的张量（loaded_weight）复制到 param.data 中，让模型拥有预训练的权重值。
                         weight_loader(param, f.get_tensor(weight_name), shard_id) # 调用weight_loader方法来加载权重。这个方法接受三个参数：param是需要加载权重的参数对象，f.get_tensor(weight_name)会从safetensors文件中获取当前权重名称weight_name对应的权重张量，shard_id是分片编号，用于指定当前权重所在的分片。通过调用weight_loader方法，权重会被正确地加载到模型的参数中。
                         break

@@ -6,7 +6,7 @@ from transformers import Qwen3Config
 from tinyvllm.layers.activation import SiluAndMul
 from tinyvllm.layers.attention import Attention
 from tinyvllm.layers.layernorm import RMSNorm
-from tinyvllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from tinyvllm.layers.linear import QKVParallelLinear, UpGateColumnParallelLinear, RowParallelLinear
 from tinyvllm.layers.rotary_embedding import get_rope
 from tinyvllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
@@ -41,9 +41,10 @@ class Qwen3Attention(nn.Module):
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
-            self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
+            [self.num_heads * self.head_dim, self.num_kv_heads * self.head_dim, self.num_kv_heads * self.head_dim],
+            # self.head_dim,
+            # self.total_num_heads,
+            # self.total_num_kv_heads,
             bias=qkv_bias,
         )
         self.o_proj = RowParallelLinear(
@@ -96,7 +97,7 @@ class Qwen3MLP(nn.Module):
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
+        self.gate_up_proj = UpGateColumnParallelLinear(
             hidden_size,
             [intermediate_size] * 2,
             bias=False,
@@ -184,9 +185,9 @@ class Qwen3Model(nn.Module):
 
 class Qwen3ForCausalLM(nn.Module):
     packed_modules_mapping = {
-        "q_proj": ("qkv_proj", "q"),
-        "k_proj": ("qkv_proj", "k"),
-        "v_proj": ("qkv_proj", "v"),
+        "q_proj": ("qkv_proj", 0),
+        "k_proj": ("qkv_proj", 1),
+        "v_proj": ("qkv_proj", 2),
         "gate_proj": ("gate_up_proj", 0),
         "up_proj": ("gate_up_proj", 1),
     }

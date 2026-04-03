@@ -7,7 +7,7 @@ from transformers import LlamaConfig
 from tinyvllm.layers.activation import SiluAndMul
 from tinyvllm.layers.attention import Attention
 from tinyvllm.layers.layernorm import RMSNorm
-from tinyvllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from tinyvllm.layers.linear import QKVParallelLinear, UpGateColumnParallelLinear, RowParallelLinear
 from tinyvllm.layers.rotary_embedding import get_rope
 from tinyvllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
@@ -42,11 +42,19 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
+        # self.qkv_proj = QKVParallelLinear(
+        #     hidden_size,
+        #     self.head_dim,
+        #     self.total_num_heads,
+        #     self.total_num_kv_heads,
+        #     bias=qkv_bias,
+        # )
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
-            self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
+            [self.num_heads * self.head_dim, self.num_kv_heads * self.head_dim, self.num_kv_heads * self.head_dim],
+            # self.head_dim,
+            # self.total_num_heads,
+            # self.total_num_kv_heads,
             bias=qkv_bias,
         )
         self.o_proj = RowParallelLinear(
@@ -67,6 +75,7 @@ class LlamaAttention(nn.Module):
             self.scaling,
             self.num_kv_heads,
         )
+        
         # if not self.qkv_bias:
         #     self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
         #     self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
@@ -99,7 +108,7 @@ class LlamaMLP(nn.Module):
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
+        self.gate_up_proj = UpGateColumnParallelLinear(
             hidden_size,
             [intermediate_size] * 2,
             bias=False,
@@ -187,9 +196,9 @@ class LlamaModel(nn.Module):
 
 class LlamaForCausalLM(nn.Module):
     packed_modules_mapping = {
-        "q_proj": ("qkv_proj", "q"),
-        "k_proj": ("qkv_proj", "k"),
-        "v_proj": ("qkv_proj", "v"),
+        "q_proj": ("qkv_proj", 0),
+        "k_proj": ("qkv_proj", 1),
+        "v_proj": ("qkv_proj", 2),
         "gate_proj": ("gate_up_proj", 0),
         "up_proj": ("gate_up_proj", 1),
     }

@@ -75,8 +75,12 @@ class ColumnParallelLinear(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.weight, self.bias) # F.linear(x, self.weight, self.bias)数学表达等价为y = x @ self.weight.T + self.bias，其中@表示矩阵乘法，self.weight.T表示self.weight的转置。
 
+class PackedColumnParallelLinear(ColumnParallelLinear):
+    """Column-parallel linear with multiple packed output shards.
 
-class MergedColumnParallelLinear(ColumnParallelLinear):
+    The full output dimension is conceptually concatenation of several shards.
+    weight_loader loads one shard at a time, selected by integer loaded_shard_id.
+    """
 
     def __init__(
         self,
@@ -87,50 +91,44 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         self.output_sizes = output_sizes
         super().__init__(input_size, sum(output_sizes), bias)
 
-    # 这个组件保存着两种权重Gate_Up-Projection和Down-Projection，所以既要对讲param.data进行切片，又要对loaded_weight进行切片。shard_offset表示当前分片在param.data中的起始位置，shard_size表示当前分片的大小。loaded_weight也需要根据tp_rank进行切片，得到当前进程需要保存的权重。最后将切片后的loaded_weight复制到param.data中。
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: int):
-        param_data = param.data # 权重参数的张量数据
-        shard_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size # shard_offset表示存放的偏移量而不是取出的偏移量
+        # param is already TP-sharded (shape: [sum(output_sizes)/tp, input])
+        # loaded_weight is the *full* weight of one shard (shape: [output_sizes[i], input])
+        param_data = param.data
+        shard_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
         shard_size = self.output_sizes[loaded_shard_id] // self.tp_size
-        param_data = param_data.narrow(self.tp_dim, shard_offset, shard_size)
-        loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank] # .chunk(self.tp_size, self.tp_dim)表示将loaded_weight沿着tp_dim维度平均切分成tp_size份，得到一个包含tp_size个张量的列表。通过索引[self.tp_rank]可以得到当前进程需要保存的权重分片。
-        param_data.copy_(loaded_weight)
+
+        param_view = param_data.narrow(self.tp_dim, shard_offset, shard_size)
+
+        # TP shard of this packed shard weight
+        loaded_view = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
+        param_view.copy_(loaded_view)
+
+class UpGateColumnParallelLinear(PackedColumnParallelLinear):
+    pass # 与父类完全一样
 
 
-class QKVParallelLinear(ColumnParallelLinear):
+class QKVParallelLinear(PackedColumnParallelLinear):
 
     def __init__(
         self,
         hidden_size: int,
-        head_size: int,
-        total_num_heads: int,
-        total_num_kv_heads: int | None = None,
+        output_sizes: list[int],
+        # head_size: int,
+        # total_num_heads: int,
+        # total_num_kv_heads: int | None = None,
         bias: bool = False,
     ):
-        tp_size = dist.get_world_size()
-        total_num_kv_heads = total_num_kv_heads or total_num_heads
-        self.head_size = head_size
-        self.num_heads = divide(total_num_heads, tp_size)
-        self.num_kv_heads = divide(total_num_kv_heads, tp_size)
-        output_size = (total_num_heads + 2 * total_num_kv_heads) * self.head_size
-        super().__init__(hidden_size, output_size, bias)
+        # tp_size = dist.get_world_size()
+        # total_num_kv_heads = total_num_kv_heads or total_num_heads
+        # self.head_size = head_size
+        # self.num_heads = divide(total_num_heads, tp_size)
+        # self.num_kv_heads = divide(total_num_kv_heads, tp_size)
+        # self.output_sizes = [self.num_heads * head_size, self.num_kv_heads * head_size, self.num_kv_heads * head_size]
+        # output_size = (total_num_heads + 2 * total_num_kv_heads) * self.head_size
+        self.output_sizes = output_sizes
+        super().__init__(hidden_size, self.output_sizes, bias)
 
-    # 这个组件存放着Q,K,V三种权重，所以需要根据loaded_shard_id来确定当前加载的权重是Q、K还是V，然后根据num_heads和num_kv_heads来计算出当前分片的大小和偏移量。最后将切片后的loaded_weight复制到param.data中。
-    def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: str):
-        param_data = param.data
-        assert loaded_shard_id in ["q", "k", "v"]
-        if loaded_shard_id == "q":
-            shard_size = self.num_heads * self.head_size
-            shard_offset = 0
-        elif loaded_shard_id == "k":
-            shard_size = self.num_kv_heads * self.head_size
-            shard_offset = self.num_heads * self.head_size
-        else:
-            shard_size = self.num_kv_heads * self.head_size
-            shard_offset = self.num_heads * self.head_size + self.num_kv_heads * self.head_size
-        param_data = param_data.narrow(self.tp_dim, shard_offset, shard_size)
-        loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
-        param_data.copy_(loaded_weight)
 
 # 在输入维度上进行切分的线性层，即每个进程只维护着权重矩阵的一部分行。这个类的weight_loader方法会根据当前进程在模型并行中的位置来加载对应分片的权重，并将其复制到当前进程的权重参数中。在前向传播过程中，每个进程计算对应分片的线性变换，最后通过通信操作将结果进行sum合并。
 # 如O-Projection和Down-Projection就是在输入维度上进行切分的‘
